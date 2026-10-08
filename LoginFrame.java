@@ -77,6 +77,17 @@ public class LoginFrame extends JFrame {
         passLabel.setFont(labelFont);
         passLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
+        // ติ๊กเพื่อแสดง/ซ่อนรหัสผ่าน
+    JCheckBox showPass = new JCheckBox("แสดงรหัสผ่าน");
+    showPass.setFont(AppFont.thai(Font.PLAIN, 18));
+    showPass.setOpaque(false);
+    showPass.setFocusPainted(false);
+    showPass.setAlignmentX(Component.LEFT_ALIGNMENT);
+    showPass.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+    final char defaultEcho = passwordField.getEchoChar();
+    showPass.addActionListener(e ->
+    passwordField.setEchoChar(showPass.isSelected() ? (char) 0 : defaultEcho));
+
         // ปุ่มเข้าสู่ระบบ
         JButton loginButton = new JButton("เข้าสู่ระบบ");
         loginButton.setFont(AppFont.thai(Font.BOLD, 26));
@@ -105,6 +116,17 @@ public class LoginFrame extends JFrame {
         form.setMinimumSize(formSize);
         form.setMaximumSize(formSize);
 
+    form.add(userLabel);
+    form.add(Box.createVerticalStrut(8));
+    form.add(usernameField);
+    form.add(Box.createVerticalStrut(25));
+    form.add(passLabel);
+    form.add(Box.createVerticalStrut(8));
+    form.add(passwordField);
+    form.add(Box.createVerticalStrut(10));   // เว้นระยะใต้ช่องรหัสผ่าน
+    form.add(showPass);                      // เช็กบ้อค
+    form.add(Box.createVerticalStrut(30));   //  ลดขนาดลงให้พอดีความสูงฟอร์ม
+    form.add(buttonPanel);
         form.add(userLabel);
         form.add(Box.createVerticalStrut(8));
         form.add(usernameField);
