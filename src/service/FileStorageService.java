@@ -9,14 +9,16 @@ import java.util.ArrayList;
 import java.util.List;
 import model.Product;
 import model.SaleOrder;
+import model.SaleOrderItem;
 import model.User;
 
 /**
  * FileStorageService - Service & Persistence Layer
  * อ่าน-เขียน CSV ในโฟลเดอร์ data/
- *  - users.csv    : id,username,password,role
- *  - products.csv : id,name,category,price,stock
- *  - sales.csv    : id,orderDate,totalAmount,status,cashier
+ *  - users.csv      : id,username,password,role
+ *  - products.csv   : id,name,category,price,stock
+ *  - sales.csv      : id,orderDate,totalAmount,status,cashier
+ *  - sale_items.csv : orderId,productId,qty,unitPrice
  */
 public class FileStorageService extends Service {
 
@@ -37,6 +39,7 @@ public class FileStorageService extends Service {
     private String usersFile() { return basePath + "users.csv"; }
     private String productsFile() { return basePath + "products.csv"; }
     private String salesFile() { return basePath + "sales.csv"; }
+    private String saleItemsFile() { return basePath + "sale_items.csv"; }
 
     private void ensureDataFiles() {
         try {
@@ -62,6 +65,10 @@ public class FileStorageService extends Service {
                 Files.write(sf,
                     List.of("id,orderDate,totalAmount,status,cashier"),
                     StandardCharsets.UTF_8);
+            }
+            Path sif = Paths.get(saleItemsFile());
+            if (!Files.exists(sif)) {
+                Files.write(sif, List.of("orderId,productId,qty,unitPrice"), StandardCharsets.UTF_8);
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -225,7 +232,7 @@ public class FileStorageService extends Service {
         saveAllProducts(all);
     }
 
-    // ---------- SaleOrder (อย่างง่าย: เก็บหัวบิล) ----------
+    // ---------- SaleOrder (หัวบิล + รายการสินค้าในบิล) ----------
     public void saveSaleOrder(SaleOrder order) {
         if (order == null) return;
         try {
@@ -237,13 +244,30 @@ public class FileStorageService extends Service {
                 + "," + esc(order.getStatus() == null ? "paid" : order.getStatus()) + "," + esc(cashier);
             Path p = Paths.get(salesFile());
             if (!Files.exists(p)) ensureDataFiles();
-            // กันเขียน id ซ้ำ: ถ้ามีแล้วให้ข้าม (หรือเขียนทับแบบง่าย = append ถ้ายังไม่มี)
+            // กันเขียน id ซ้ำ: ถ้ามีแล้วให้ข้าม
             List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8);
             for (String l : lines) {
                 if (l.startsWith(order.getId() + ",")) return;
             }
             Files.write(p, (System.lineSeparator() + line).getBytes(StandardCharsets.UTF_8),
                 StandardOpenOption.APPEND);
+
+            // บันทึกรายการสินค้าในบิล (ใช้คืนสต็อกตอนลบบิล)
+            Path ip = Paths.get(saleItemsFile());
+            if (!Files.exists(ip)) ensureDataFiles();
+            StringBuilder sb = new StringBuilder();
+            for (SaleOrderItem it : order.getItems()) {
+                if (it.getProduct() == null) continue;
+                sb.append(System.lineSeparator())
+                  .append(esc(order.getId())).append(",")
+                  .append(esc(it.getProduct().getId())).append(",")
+                  .append(it.getQuantity()).append(",")
+                  .append(it.getUnitPrice());
+            }
+            if (sb.length() > 0) {
+                Files.write(ip, sb.toString().getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.APPEND);
+            }
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -276,6 +300,68 @@ public class FileStorageService extends Service {
             e.printStackTrace();
         }
         return list;
+    }
+
+    /**
+     * ลบบิลและคืนสต็อกตามรายการในบิล
+     * คืน -1 ถ้าไม่พบบิล/เขียนไฟล์ไม่ได้, นอกนั้นคืนจำนวนรายการสินค้าที่คืนสต็อกได้
+     */
+    public int deleteSaleOrder(String orderId) {
+        if (orderId == null) return -1;
+        try {
+            Path sp = Paths.get(salesFile());
+            if (!Files.exists(sp)) return -1;
+            List<String> salesLines = Files.readAllLines(sp, StandardCharsets.UTF_8);
+            List<String> keepSales = new ArrayList<>();
+            boolean found = false;
+            for (int i = 0; i < salesLines.size(); i++) {
+                String line = salesLines.get(i);
+                if (i > 0 && !line.trim().isEmpty()
+                        && unesc(splitCsv(line.trim())[0]).equals(orderId)) {
+                    found = true;
+                    continue;
+                }
+                keepSales.add(line);
+            }
+            if (!found) return -1;
+
+            int restored = 0;
+            Path ip = Paths.get(saleItemsFile());
+            if (Files.exists(ip)) {
+                List<String> items = Files.readAllLines(ip, StandardCharsets.UTF_8);
+                List<String> keepItems = new ArrayList<>();
+                List<Product> products = loadProducts();
+                for (int i = 0; i < items.size(); i++) {
+                    String line = items.get(i).trim();
+                    if (i == 0 || line.isEmpty()) { keepItems.add(items.get(i)); continue; }
+                    String[] c = splitCsv(line);
+                    if (c.length < 3 || !unesc(c[0]).equals(orderId)) {
+                        keepItems.add(items.get(i));
+                        continue;
+                    }
+                    try {
+                        String pid = unesc(c[1]);
+                        int qty = Integer.parseInt(unesc(c[2]));
+                        for (Product p : products) {
+                            if (p.getId().equals(pid)) {
+                                p.addStock(qty);
+                                restored++;
+                                break;
+                            }
+                        }
+                    } catch (NumberFormatException ex) {
+                        // ข้ามแถวเสีย
+                    }
+                }
+                if (restored > 0) saveAllProducts(products);
+                Files.write(ip, keepItems, StandardCharsets.UTF_8);
+            }
+            Files.write(sp, keepSales, StandardCharsets.UTF_8);
+            return restored;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return -1;
+        }
     }
 
     // --- override จาก Service (abstract) ---
