@@ -128,6 +128,15 @@ public class MainFrame extends JFrame {
 
     /** สลับหน้า + รีโหลดข้อมูลให้สด (เลือกอะไรไปก็เปลี่ยน tab ได้ตลอด) */
     public void showPage(String page) {
+        // หน้าสต็อก: เปิด/แก้ไขได้เฉพาะ Admin เท่านั้น
+        if (page.equals(PAGE_STOCK) && !isCurrentUserAdmin()) {
+            JOptionPane.showMessageDialog(this,
+                    "คุณไม่ใช่ admin",
+                    "ไม่มีสิทธิ์เข้าถึง",
+                    JOptionPane.WARNING_MESSAGE);
+            return; // ไม่สลับหน้า ค้างอยู่หน้าเดิม
+        }
+
         cardLayout.show(cardPanel, page);
         for (int i = 0; i < navButtons.size(); i++) {
             boolean active =
@@ -140,6 +149,11 @@ public class MainFrame extends JFrame {
         if (page.equals(PAGE_POS)) posPanel.refreshProducts();
         if (page.equals(PAGE_STOCK)) inventoryPanel.loadProducts();
         if (page.equals(PAGE_HISTORY)) historyPanel.loadHistory();
+    }
+
+    /** เช็กว่าผู้ใช้ที่ล็อกอินอยู่เป็น Admin หรือไม่ (user == null ถือว่าไม่ใช่ admin) */
+    private boolean isCurrentUserAdmin() {
+        return currentUser != null && currentUser.isAdmin();
     }
 
     private void logout() {
