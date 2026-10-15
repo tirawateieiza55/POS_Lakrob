@@ -110,12 +110,12 @@ public class MainFrame extends JFrame {
         lblUserInfo = new JLabel("<html>ผู้ใช้งาน : <b>" + username + "</b><br>สิทธิ์ : " + role + "<br>" + datetime + "</html>");
         lblUserInfo.setFont(font(Font.PLAIN, 12));
         lblUserInfo.setForeground(Color.WHITE);
-        lblUserInfo.setAlignmentX(Component.CENTER_ALIGNMENT);
+        lblUserInfo.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         bottom.add(lblUserInfo);
         bottom.add(Box.createVerticalStrut(12));
         StyledButton logout = new StyledButton("ออกจากระบบ", new Color(0xB46A6A), 5);
-        logout.setAlignmentX(Component.CENTER_ALIGNMENT);
+        logout.setAlignmentX(Component.LEFT_ALIGNMENT);
         logout.setPreferredSize(new Dimension(200, 40));
         logout.setMaximumSize(new Dimension(200, 40));
         logout.addActionListener(e -> logout());
