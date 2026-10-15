@@ -12,7 +12,7 @@ import model.User;
 import service.FileStorageService;
 
 /**
- * HistoryPanel - ร่างไว้ก่อน (แสดงประวัติจาก sales.csv)
+ * HistoryPanel -  (แสดงประวัติจาก sales.csv)
  * เต็มๆ จะทำรอบถัดไป (กรองตามวัน + ดูรายละเอียด + รายงานยอด)
  */
 public class HistoryPanel extends JPanel {
