@@ -47,7 +47,7 @@ public class MainFrame extends JFrame {
 
         posPanel = new PosPanel(user);
         inventoryPanel = new InventoryPanel();
-        historyPanel = new HistoryPanel();
+        historyPanel = new HistoryPanel(user);
 
         cardPanel.add(posPanel, PAGE_POS);
         cardPanel.add(inventoryPanel, PAGE_STOCK);

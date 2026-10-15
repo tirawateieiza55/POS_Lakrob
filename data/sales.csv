@@ -3,4 +3,7 @@ id,orderDate,totalAmount,status,cashier
 
 
 
-Order 1,2026-10-09 11:12:22,1500.0,paid,user
+Order 1,2026-10-09 11:12:22,1500.0,cancelled,user
+Order 2,2026-10-15 20:45:08,75.0,cancelled,admin
+Order 3,2026-10-15 20:45:31,240.0,cancelled,admin
+Order 4,2026-10-15 20:49:28,60.0,cancelled,user

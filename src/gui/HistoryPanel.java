@@ -8,6 +8,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.List;
 import model.SaleOrder;
+import model.User;
 import service.FileStorageService;
 
 /**
@@ -20,10 +21,12 @@ public class HistoryPanel extends JPanel {
     private static final Color CONTENT_BG = new Color(0xE0D3D3);
 
     private static final int COL_ID = 0;
+    private static final int COL_STATUS = 3;
     private static final int COL_DELETE = 4;
     private static final String DELETE_MARK = "✕";
 
     private List<SaleOrder> sales;
+    private User currentUser;
     private FileStorageService storage = new FileStorageService();
     private DefaultTableModel tableModel;
     private JTable table;
@@ -31,6 +34,11 @@ public class HistoryPanel extends JPanel {
     private JLabel totalLabel;
 
     public HistoryPanel() {
+        this(null);
+    }
+
+    public HistoryPanel(User user) {
+        this.currentUser = user;
         setLayout(new BorderLayout());
         setBackground(CONTENT_BG);
 
@@ -52,13 +60,26 @@ public class HistoryPanel extends JPanel {
         header.add(left, BorderLayout.WEST);
         add(header, BorderLayout.NORTH);
 
-        String[] cols = {"เลขที่บิล", "วันเวลา", "ยอดรวม", "สถานะ", "ลบ"};
+        String[] cols = {"เลขที่บิล", "วันเวลา", "ยอดรวม", "สถานะ", "ยกเลิก"};
         tableModel = new DefaultTableModel(cols, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
         table = new JTable(tableModel);
         table.setFont(AppFont.thai(Font.PLAIN, 14));
         table.setRowHeight(28);
+
+        // บิลที่ยกเลิกแล้วแสดงเป็นสีเทา (ส่วนคอลัมน์ปุ่มมี renderer ของตัวเองด้านล่าง)
+        table.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable tb, Object value,
+                    boolean isSelected, boolean hasFocus, int row, int column) {
+                super.getTableCellRendererComponent(tb, value, isSelected, hasFocus, row, column);
+                boolean cancelled = FileStorageService.STATUS_CANCELLED
+                        .equalsIgnoreCase(String.valueOf(tb.getModel().getValueAt(row, COL_STATUS)));
+                if (!isSelected) setForeground(cancelled ? Color.GRAY : Color.BLACK);
+                return this;
+            }
+        });
 
         // คอลัมน์ปุ่มกากบาท
         table.getColumnModel().getColumn(COL_DELETE).setMaxWidth(70);
@@ -81,7 +102,7 @@ public class HistoryPanel extends JPanel {
                 int col = table.columnAtPoint(e.getPoint());
                 if (row < 0 || col != COL_DELETE) return;
                 if (!DELETE_MARK.equals(tableModel.getValueAt(row, COL_DELETE))) return;
-                deleteOrder(tableModel.getValueAt(row, COL_ID).toString());
+                cancelOrder(tableModel.getValueAt(row, COL_ID).toString());
             }
         });
         // เปลี่ยนเมาส์เป็นรูปมือเมื่อชี้ที่ปุ่ม
@@ -127,41 +148,53 @@ public class HistoryPanel extends JPanel {
         tableModel.setRowCount(0);
 
         double grandTotal = 0;
+        int cancelledCount = 0;
         for (SaleOrder o : sales) {
+            boolean cancelled = FileStorageService.STATUS_CANCELLED.equalsIgnoreCase(o.getStatus());
             tableModel.addRow(new Object[]{
                 o.getId(),
                 o.getOrderDate() == null ? "" : o.getOrderDate().toString().replace("T", " "),
                 String.format("%.2f", o.getTotalAmount()),
                 o.getStatus(),
-                DELETE_MARK
+                cancelled ? "" : DELETE_MARK   // ยกเลิกไปแล้วไม่ต้องมีปุ่ม
             });
-            grandTotal += o.getTotalAmount();
+            if (cancelled) cancelledCount++;
+            else grandTotal += o.getTotalAmount(); // ยอดรวมไม่นับบิลที่ยกเลิก
         }
         if (sales.isEmpty()) {
             tableModel.addRow(new Object[]{"-", "ยังไม่มีข้อมูลการขาย", "-", "-", ""});
         }
 
-        countLabel.setText("จำนวนบิลทั้งหมด: " + sales.size() + " บิล");
+        countLabel.setText("จำนวนบิลทั้งหมด: " + sales.size() + " บิล"
+                + (cancelledCount > 0 ? " (ยกเลิก " + cancelledCount + " บิล)" : ""));
         totalLabel.setText(String.format("ยอดรวมทั้งหมด: %,.2f บาท", grandTotal));
     }
 
-    private void deleteOrder(String orderId) {
+    /** ยกเลิกบิล: เปลี่ยนสถานะเป็น cancelled + คืนสต็อก (บิลยังอยู่ในประวัติ) */
+    private void cancelOrder(String orderId) {
         int ok = JOptionPane.showConfirmDialog(this,
-                "ต้องการลบบิล " + orderId + " และคืนสินค้าเข้าสต็อกใช่หรือไม่?\nการลบไม่สามารถย้อนกลับได้",
-                "ยืนยันการลบบิล",
+                "ต้องการยกเลิกบิล " + orderId + " และคืนสินค้าเข้าสต็อกใช่หรือไม่?\n"
+                + "บิลจะยังอยู่ในประวัติ โดยแสดงสถานะ " + FileStorageService.STATUS_CANCELLED,
+                "ยืนยันการยกเลิกบิล",
                 JOptionPane.YES_NO_OPTION,
                 JOptionPane.WARNING_MESSAGE);
         if (ok != JOptionPane.YES_OPTION) return;
 
-        int restored = storage.deleteSaleOrder(orderId);
+        int restored = storage.cancelSaleOrder(orderId);
+        if (restored == -2) {
+            JOptionPane.showMessageDialog(this, "บิลนี้ถูกยกเลิกไปแล้ว",
+                    "แจ้งเตือน", JOptionPane.INFORMATION_MESSAGE);
+            loadHistory();
+            return;
+        }
         if (restored < 0) {
-            JOptionPane.showMessageDialog(this, "ลบบิลไม่สำเร็จ ไม่พบบิลหรือบันทึกไฟล์ไม่ได้",
+            JOptionPane.showMessageDialog(this, "ยกเลิกบิลไม่สำเร็จ ไม่พบบิลหรือบันทึกไฟล์ไม่ได้",
                     "ผิดพลาด", JOptionPane.ERROR_MESSAGE);
             return;
         }
         if (restored == 0) {
             JOptionPane.showMessageDialog(this,
-                    "ลบบิลแล้ว แต่ไม่พบรายการสินค้าของบิลนี้ จึงไม่ได้คืนสต็อก\n"
+                    "ยกเลิกบิลแล้ว แต่ไม่พบรายการสินค้าของบิลนี้ จึงไม่ได้คืนสต็อก\n"
                     + "(บิลที่ขายก่อนเพิ่มระบบเก็บรายการสินค้า)",
                     "แจ้งเตือน", JOptionPane.INFORMATION_MESSAGE);
         }

@@ -7,6 +7,7 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import model.Product;
 import service.FileStorageService;
 
@@ -253,14 +254,15 @@ public class InventoryPanel extends JPanel {
     private void refreshTable() {
         tableModel.setRowCount(0);
         for (Product p : products) {
-            if (!searchText.isEmpty()
-                && !p.getName().contains(searchText)
-                && !p.getId().contains(searchText)) continue;
+            String q = searchText.toLowerCase();
+            if (!q.isEmpty()
+                && !p.getName().toLowerCase().contains(q)
+                && !p.getId().toLowerCase().contains(q)) continue;
             String status = p.getStock() <= 0 ? "หมดสต็อก" : (p.getStock() <= 5 ? "ใกล้หมด" : "พร้อมขาย");
             if (p.getStock() > 5) status = "พร้อมขาย";
             tableModel.addRow(new Object[]{
                 p.getName(), p.getId(), p.getCategory(),
-                (int) p.getPrice(), p.getStock(), status
+                fmtPrice(p.getPrice()), p.getStock(), status
             });
         }
     }
@@ -452,7 +454,8 @@ public class InventoryPanel extends JPanel {
             try {
                 price = Double.parseDouble(txtPrice.getText().trim());
                 stock = Integer.parseInt(txtStock.getText().trim());
-                if (price < 0 || stock < 0) throw new NumberFormatException();
+                if (Double.isNaN(price) || Double.isInfinite(price) || price < 0 || stock < 0)
+                    throw new NumberFormatException();
             } catch (NumberFormatException ex) {
                 JOptionPane.showMessageDialog(dlg, "ราคาขายหรือจำนวนสต็อกไม่ถูกต้อง");
                 return;
@@ -485,9 +488,9 @@ public class InventoryPanel extends JPanel {
         body.setLayout(new GridLayout(3, 2, 12, 16));
 
         JTextField txtName = popupField(p.getName());
-        JComboBox<String> cbCat = popupCombo(CATEGORIES);
-        cbCat.setSelectedItem(p.getCategory());
-        JTextField txtPrice = popupField(String.valueOf((int) p.getPrice()));
+        JComboBox<String> cbCat = popupCombo(categoriesWith(p.getCategory()));
+        cbCat.setSelectedItem(p.getCategory().isEmpty() ? CATEGORIES[0] : p.getCategory());
+        JTextField txtPrice = popupField(fmtPrice(p.getPrice()));
 
         body.add(popupLabel("ชื่อเมนู :"));
         body.add(txtName);
@@ -508,7 +511,8 @@ public class InventoryPanel extends JPanel {
             double price;
             try {
                 price = Double.parseDouble(txtPrice.getText().trim());
-                if (price < 0) throw new NumberFormatException();
+                if (Double.isNaN(price) || Double.isInfinite(price) || price < 0)
+                    throw new NumberFormatException();
             } catch (NumberFormatException ex) {
                 JOptionPane.showMessageDialog(dlg, "ราคาขายไม่ถูกต้อง");
                 return;
@@ -588,9 +592,12 @@ public class InventoryPanel extends JPanel {
         dlg.setVisible(true);
     }
 
-    // ================= 4. ปรับปรุงสต็อก (เติมสต็อก) =================
+    // ================= 4. ปรับปรุงสต็อก (เพิ่ม / ลด) =================
+    private static final String ADJ_ADD = "เพิ่มสต็อก (+)";
+    private static final String ADJ_REDUCE = "ลดสต็อก (-)";
+
     private void showRestockDialog(Product p) {
-        JDialog dlg = createPopup("ปรับปรุงสต็อก", 520, 330, null);
+        JDialog dlg = createPopup("ปรับปรุงสต็อก", 520, 400, null);
 
         JPanel body = popupBody();
         body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
@@ -603,34 +610,93 @@ public class InventoryPanel extends JPanel {
         stockLbl.setFont(font(Font.BOLD, 18));
         stockLbl.setAlignmentX(Component.CENTER_ALIGNMENT);
 
+        // แถว dropdown เลือกประเภทการปรับ
+        JPanel typeRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
+        typeRow.setOpaque(false);
+        typeRow.setBorder(new EmptyBorder(18, 0, 0, 0));
+        JLabel typeLbl = new JLabel("ประเภทการปรับ :");
+        typeLbl.setFont(font(Font.BOLD, 14));
+        JComboBox<String> cbType = popupCombo(new String[]{ADJ_ADD, ADJ_REDUCE});
+        cbType.setPreferredSize(new Dimension(170, 28));
+        typeRow.add(typeLbl);
+        typeRow.add(cbType);
+
+        // แถวกรอกจำนวน
         JPanel inputRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
         inputRow.setOpaque(false);
-        inputRow.setBorder(new EmptyBorder(18, 0, 0, 0));
-        JLabel inLbl = new JLabel("ระบุจำนวนสต็อกที่ต้องการเติม (ชิ้น) :");
+        inputRow.setBorder(new EmptyBorder(12, 0, 0, 0));
+        JLabel inLbl = new JLabel("ระบุจำนวนที่ต้องการเพิ่ม (ชิ้น) :");
         inLbl.setFont(font(Font.BOLD, 14));
-        JTextField txtAdd = popupField();
-        txtAdd.setPreferredSize(new Dimension(170, 26));
+        JTextField txtQty = popupField();
+        txtQty.setPreferredSize(new Dimension(150, 26));
         inputRow.add(inLbl);
-        inputRow.add(txtAdd);
+        inputRow.add(txtQty);
+
+        // แสดงสต็อกหลังปรับแบบสด
+        JLabel previewLbl = new JLabel(" ");
+        previewLbl.setFont(font(Font.BOLD, 15));
+        previewLbl.setAlignmentX(Component.CENTER_ALIGNMENT);
+        previewLbl.setBorder(new EmptyBorder(14, 0, 0, 0));
+
+        Runnable refresh = () -> {
+            boolean reduce = ADJ_REDUCE.equals(cbType.getSelectedItem());
+            inLbl.setText(reduce ? "ระบุจำนวนที่ต้องการลด (ชิ้น) :" : "ระบุจำนวนที่ต้องการเพิ่ม (ชิ้น) :");
+            try {
+                int q = Integer.parseInt(txtQty.getText().trim());
+                if (q <= 0) throw new NumberFormatException();
+                long after = reduce ? (long) p.getStock() - q : (long) p.getStock() + q;
+                if (after < 0) {
+                    previewLbl.setForeground(new Color(0xC62828));
+                    previewLbl.setText("ลดได้ไม่เกิน " + p.getStock() + " ชิ้น");
+                } else {
+                    previewLbl.setForeground(Color.BLACK);
+                    previewLbl.setText("สต็อกหลังปรับ : " + after + " ชิ้น");
+                }
+            } catch (NumberFormatException ex) {
+                previewLbl.setText(" ");
+            }
+        };
+        cbType.addActionListener(e -> refresh.run());
+        txtQty.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { refresh.run(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { refresh.run(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { refresh.run(); }
+        });
 
         body.add(menuLbl);
         body.add(Box.createVerticalStrut(6));
         body.add(stockLbl);
+        body.add(typeRow);
         body.add(inputRow);
+        body.add(previewLbl);
 
         JButton btnCancel = popupButton("Cancel");
         JButton btnOk = popupButton("OK");
         btnCancel.addActionListener(e -> dlg.dispose());
         btnOk.addActionListener(e -> {
-            int add;
+            boolean reduce = ADJ_REDUCE.equals(cbType.getSelectedItem());
+            int qty;
             try {
-                add = Integer.parseInt(txtAdd.getText().trim());
-                if (add <= 0) throw new NumberFormatException();
+                qty = Integer.parseInt(txtQty.getText().trim());
+                if (qty <= 0) throw new NumberFormatException();
             } catch (NumberFormatException ex) {
                 JOptionPane.showMessageDialog(dlg, "กรุณากรอกจำนวนเต็มมากกว่า 0");
                 return;
             }
-            p.addStock(add);
+            if (reduce) {
+                if (qty > p.getStock()) {
+                    JOptionPane.showMessageDialog(dlg,
+                        "สต็อกปัจจุบันมีเพียง " + p.getStock() + " ชิ้น ลดได้ไม่เกินจำนวนนี้");
+                    return;
+                }
+                p.reduceStock(qty);
+            } else {
+                if ((long) p.getStock() + qty > Integer.MAX_VALUE) {
+                    JOptionPane.showMessageDialog(dlg, "จำนวนสต็อกมากเกินไป");
+                    return;
+                }
+                p.addStock(qty);
+            }
             updateProduct(p);
             dlg.dispose();
         });
@@ -645,6 +711,22 @@ public class InventoryPanel extends JPanel {
     }
 
     // ================= helpers =================
+    /** แสดงราคา: เป็นจำนวนเต็มไม่มีทศนิยม แต่ถ้ามีสตางค์ให้โชว์ 2 ตำแหน่ง (เดิมใช้ (int) ทำให้ 12.5 กลายเป็น 12) */
+    private static String fmtPrice(double v) {
+        if (v == Math.floor(v) && !Double.isInfinite(v)) return String.valueOf((long) v);
+        return String.format(Locale.US, "%.2f", v);
+    }
+
+    /** รายการหมวดหมู่ใน dropdown: ถ้าสินค้ามีหมวดที่ไม่อยู่ในลิสต์ ให้เติมเข้าไป กันถูกเปลี่ยนหมวดเงียบๆ ตอนกด OK */
+    private static String[] categoriesWith(String current) {
+        if (current == null || current.isEmpty()) return CATEGORIES;
+        for (String c : CATEGORIES) if (c.equals(current)) return CATEGORIES;
+        String[] out = new String[CATEGORIES.length + 1];
+        out[0] = current;
+        System.arraycopy(CATEGORIES, 0, out, 1, CATEGORIES.length);
+        return out;
+    }
+
     private String nextId() {
         int max = 0;
         for (Product p : products) {

@@ -6,7 +6,9 @@ import java.awt.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import model.CartItem;
 import model.Product;
 import model.SaleOrder;
@@ -38,7 +40,6 @@ public class PosPanel extends JPanel {
 
     private User currentUser;
     private FileStorageService storage = new FileStorageService();
-    private int orderCounter = 1;
 
     private String activeCategory = "ทั้งหมด";
     private String searchText = "";
@@ -61,23 +62,27 @@ public class PosPanel extends JPanel {
         this.currentUser = user;
         setLayout(new BorderLayout());
         setBackground(CONTENT_BG);
-        initOrderCounter();
         buildUI();
         refreshProducts();
     }
 
     public void setUser(User user) { this.currentUser = user; }
 
-    private void initOrderCounter() {
+    /**
+     * เลขบิลถัดไป = เลขสูงสุดที่มีอยู่ + 1
+     * (เดิมใช้จำนวนบิล + 1 ซึ่งพอลบบิลกลางๆ แล้วเปิดโปรแกรมใหม่ เลขจะซ้ำกับบิลที่มีอยู่ -> บิลไม่ถูกบันทึกแต่สต็อกถูกตัด)
+     */
+    private String nextOrderId() {
+        int max = 0;
         try {
-            int n = storage.loadSaleOrders().size();
-            orderCounter = n + 1;
-        } catch (Exception e) {
-            orderCounter = 1;
-        }
+            for (SaleOrder o : storage.loadSaleOrders()) {
+                String num = o.getId() == null ? "" : o.getId().replaceAll("[^0-9]", "");
+                if (num.isEmpty() || num.length() > 9) continue;
+                max = Math.max(max, Integer.parseInt(num));
+            }
+        } catch (Exception ignored) {}
+        return "Order " + (max + 1);
     }
-
-    private String nextOrderId() { return "Order " + orderCounter; }
 
     // ---------------- UI ----------------
     private void buildUI() {
@@ -198,7 +203,8 @@ public class PosPanel extends JPanel {
         card.add(Box.createVerticalStrut(4));
         card.add(btnAdd);
         card.add(Box.createVerticalStrut(2));
-        Color stockColor = outOfStock ? Color.RED : (p.getStock() <= 5 ? Color.RED : Color.RED);
+        Color stockColor = outOfStock ? Color.RED
+                : (p.getStock() <= 5 ? new Color(0xE08000) : new Color(0x1B7F2B));
         String stockTxt = outOfStock ? "หมดสต็อก" : ("คงเหลือ " + p.getStock() + " ชิ้น");
         card.add(label(stockTxt, Font.PLAIN, 10, stockColor));
         return card;
@@ -294,7 +300,66 @@ public class PosPanel extends JPanel {
     /** โหลดสินค้าจาก CSV ใหม่ (เรียกเมื่อเปิดหน้านี้ หรือหลังเพิ่มสินค้าจากหน้าสต็อก) */
     public void refreshProducts() {
         products = storage.loadProducts();
+        syncCartWithProducts();
         applyFilter();
+    }
+
+    /**
+     * ตะกร้าเก็บ Product ตัวเก่าไว้ ถ้าแอดมินแก้ราคา/สต็อก/ลบสินค้าไประหว่างนั้น ตะกร้าจะค้างค่าเก่า
+     * -> ผูกกลับกับข้อมูลล่าสุดทุกครั้งที่รีเฟรช, ตัดจำนวนให้ไม่เกินสต็อก, เอาสินค้าที่ถูกลบ/หมดออก
+     */
+    private void syncCartWithProducts() {
+        if (cart.isEmpty()) return;
+        boolean changed = false;
+        for (Iterator<CartItem> it = cart.iterator(); it.hasNext();) {
+            CartItem c = it.next();
+            Product fresh = null;
+            for (Product p : products) {
+                if (p.getId().equals(c.getProduct().getId())) { fresh = p; break; }
+            }
+            if (fresh == null) { it.remove(); changed = true; continue; }
+            if (c.getUnitPrice() != fresh.getPrice()) changed = true;
+            c.setProduct(fresh);
+            c.setUnitPrice(fresh.getPrice());
+            if (c.getQuantity() > fresh.getStock()) {
+                c.setQuantity(fresh.getStock());
+                changed = true;
+            }
+            if (c.getQuantity() <= 0) { it.remove(); changed = true; }
+        }
+        renderCart();
+        if (changed) {
+            JOptionPane.showMessageDialog(this,
+                "มีการเปลี่ยนแปลงราคา/สต็อกสินค้า ตะกร้าถูกปรับให้ตรงกับข้อมูลล่าสุดแล้ว",
+                "ปรับตะกร้า", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
+    /** เช็คสต็อกจริงในไฟล์ก่อนขาย: คืน true ถ้าพอสำหรับทุกรายการในตะกร้า */
+    private boolean verifyStock() {
+        List<Product> latest = storage.loadProducts();
+        for (CartItem c : cart) {
+            Product found = null;
+            for (Product p : latest) {
+                if (p.getId().equals(c.getProduct().getId())) { found = p; break; }
+            }
+            String name = c.getProduct().getName();
+            if (found == null) {
+                JOptionPane.showMessageDialog(this, "สินค้า \"" + name + "\" ถูกลบออกจากระบบแล้ว",
+                    "ไม่สามารถชำระเงินได้", JOptionPane.WARNING_MESSAGE);
+                refreshProducts();
+                return false;
+            }
+            if (found.getStock() < c.getQuantity()) {
+                JOptionPane.showMessageDialog(this,
+                    "สต็อกของ \"" + name + "\" ไม่พอ (คงเหลือ " + found.getStock()
+                        + " ชิ้น แต่ในตะกร้ามี " + c.getQuantity() + " ชิ้น)",
+                    "สต็อกไม่พอ", JOptionPane.WARNING_MESSAGE);
+                refreshProducts();
+                return false;
+            }
+        }
+        return true;
     }
 
     public void loadProducts() { refreshProducts(); }
@@ -304,9 +369,10 @@ public class PosPanel extends JPanel {
         for (Product p : products) {
             boolean catOk = activeCategory.equals("ทั้งหมด")
                 || p.getCategory().equals(activeCategory);
-            boolean searchOk = searchText.isEmpty()
-                || p.getName().contains(searchText)
-                || p.getId().contains(searchText);
+            String q = searchText.toLowerCase();
+            boolean searchOk = q.isEmpty()
+                || p.getName().toLowerCase().contains(q)
+                || p.getId().toLowerCase().contains(q);
             if (catOk && searchOk) filtered.add(p);
         }
         renderGrid();
@@ -391,8 +457,8 @@ public class PosPanel extends JPanel {
 
     private double parseDiscount() {
         try {
-            discount = Double.parseDouble(txtDiscount.getText().trim());
-            if (discount < 0) discount = 0;
+            discount = Double.parseDouble(txtDiscount.getText().trim().replace(",", ""));
+            if (Double.isNaN(discount) || Double.isInfinite(discount) || discount < 0) discount = 0;
         } catch (Exception e) {
             discount = 0;
         }
@@ -500,6 +566,7 @@ public class PosPanel extends JPanel {
                 "ตะกร้าว่าง", JOptionPane.WARNING_MESSAGE);
             return;
         }
+        if (!verifyStock()) return;
         double sub = calculateTotal();
         double d = parseDiscount();
         if (d > sub) d = sub;
@@ -554,7 +621,7 @@ public class PosPanel extends JPanel {
             b.setFocusPainted(false);
             quick.add(b);
         }
-        btnExact.addActionListener(e -> txtReceived.setText(String.format("%.0f", netTotal)));
+        btnExact.addActionListener(e -> txtReceived.setText(String.format(Locale.US, "%.2f", netTotal)));
         b100.addActionListener(e -> txtReceived.setText("100"));
         b500.addActionListener(e -> txtReceived.setText("500"));
         b1000.addActionListener(e -> txtReceived.setText("1000"));
@@ -571,7 +638,8 @@ public class PosPanel extends JPanel {
         btnOk.addActionListener(e -> {
             double received;
             try {
-                received = Double.parseDouble(txtReceived.getText().trim());
+                received = Double.parseDouble(txtReceived.getText().trim().replace(",", ""));
+                if (Double.isNaN(received) || Double.isInfinite(received)) throw new NumberFormatException();
             } catch (Exception ex) {
                 JOptionPane.showMessageDialog(dlg, "กรุณากรอกจำนวนเงินให้ถูกต้อง",
                     "ข้อมูลไม่ถูกต้อง", JOptionPane.WARNING_MESSAGE);
@@ -604,33 +672,43 @@ public class PosPanel extends JPanel {
     }
 
     private void completeSale(String orderId, double netTotal, double received, double change) {
+        // เช็คสต็อกจริงอีกรอบก่อนตัด (กันสต็อกเปลี่ยนระหว่างเปิดหน้าชำระเงิน)
+        if (!verifyStock()) return;
+
         double sub = calculateTotal();
         double d = parseDiscount();
-        // ตัดสต็อก + เซฟ
-        List<Product> all = storage.loadProducts();
-        for (CartItem c : cart) {
-            for (Product p : all) {
-                if (p.getId().equals(c.getProduct().getId())) {
-                    p.reduceStock(c.getQuantity());
-                    // sync ตัวใน memory ด้วย
-                    c.getProduct().setStock(p.getStock());
-                }
-            }
-        }
-        storage.saveAllProducts(all);
+        if (d > sub) d = sub;
 
-        // บันทึกหัวบิล
+        // 1) บันทึกบิลก่อน ถ้าบันทึกไม่ได้ (เช่น เลขบิลซ้ำ/เขียนไฟล์ไม่ได้) จะไม่ตัดสต็อก
+        boolean saved = false;
         try {
             SaleOrder order = new SaleOrder(orderId, currentUser);
             order.setOrderDate(LocalDateTime.now());
             order.setStatus("paid");
             for (CartItem c : cart) order.addItem(c.getProduct(), c.getQuantity());
             order.setTotalAmount(netTotal);
-            storage.saveSaleOrder(order);
+            saved = storage.saveSaleOrder(order);
         } catch (Exception e) {
             e.printStackTrace();
         }
-        orderCounter++;
+        if (!saved) {
+            JOptionPane.showMessageDialog(this,
+                "บันทึกบิลไม่สำเร็จ (เลขบิลซ้ำหรือเขียนไฟล์ไม่ได้) ยังไม่มีการตัดสต็อก กรุณาลองใหม่อีกครั้ง",
+                "ผิดพลาด", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        // 2) ตัดสต็อก + เซฟ
+        List<Product> all = storage.loadProducts();
+        for (CartItem c : cart) {
+            for (Product p : all) {
+                if (p.getId().equals(c.getProduct().getId())) {
+                    p.reduceStock(c.getQuantity());
+                    break;
+                }
+            }
+        }
+        storage.saveAllProducts(all);
 
         showReceiptDialog(orderId, new ArrayList<>(cart), sub, d, netTotal, received, change);
 
@@ -719,7 +797,7 @@ public class PosPanel extends JPanel {
         sb.append(String.format("ยอดสุทธิ :    %.2f\n", net));
         sb.append(line).append("\n");
         sb.append(String.format("วิธีชำระเงิน:         เงินสด\n"));
-        sb.append(String.format("รับเงินมา:           %.0f\n", received));
+        sb.append(String.format("รับเงินมา:           %.2f\n", received));
         sb.append(String.format("เงินทอน:             %.2f\n", change));
         sb.append(line).append("\n");
         sb.append("      Thank you for Order !!!!\n");

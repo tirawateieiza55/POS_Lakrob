@@ -30,8 +30,10 @@ public class User {
 
     public boolean isAdmin() {
         if (role == null) return false;
+        // เทียบแบบตรงตัวเท่านั้น กัน role ที่บังเอิญมีคำว่า admin/จัดการ ปนอยู่ได้สิทธิ์ผู้ดูแลโดยไม่ตั้งใจ
         String r = role.trim().toLowerCase();
-        return r.equals("admin") || r.contains("admin") || r.contains("จัดการ") || r.contains("เจ้าของ");
+        return r.equals("admin") || r.equals("ผู้จัดการ") || r.equals("ผู้จัดการร้าน")
+                || r.equals("เจ้าของ") || r.equals("เจ้าของร้าน");
     }
 
     public boolean checkPassword(String password) {

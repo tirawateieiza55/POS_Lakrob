@@ -85,7 +85,9 @@ public class FileStorageService extends Service {
         for (int i = 0; i < line.length(); i++) {
             char c = line.charAt(i);
             if (c == '"') {
+                // เก็บเครื่องหมาย " ไว้ แล้วให้ unesc() เป็นคนแกะ (รองรับ "" แทน " ในข้อความ)
                 inQuote = !inQuote;
+                cur.append(c);
             } else if (c == ',' && !inQuote) {
                 out.add(cur.toString().trim());
                 cur.setLength(0);
@@ -103,6 +105,20 @@ public class FileStorageService extends Service {
             return "\"" + s.replace("\"", "\"\"") + "\"";
         }
         return s;
+    }
+
+    /** ต่อท้ายไฟล์ทีละบรรทัด: ถ้าไฟล์เดิมไม่ลงท้ายด้วย newline จะเติมให้ก่อน (กันเกิดบรรทัดว่างสะสม/บรรทัดติดกัน) */
+    private static void appendLines(Path p, List<String> lines) throws IOException {
+        if (lines == null || lines.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
+        if (Files.exists(p) && Files.size(p) > 0) {
+            try (RandomAccessFile raf = new RandomAccessFile(p.toFile(), "r")) {
+                raf.seek(raf.length() - 1);
+                if (raf.read() != '\n') sb.append(System.lineSeparator());
+            }
+        }
+        for (String l : lines) sb.append(l).append(System.lineSeparator());
+        Files.write(p, sb.toString().getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
     }
 
     private static String unesc(String s) {
@@ -233,8 +249,12 @@ public class FileStorageService extends Service {
     }
 
     // ---------- SaleOrder (หัวบิล + รายการสินค้าในบิล) ----------
-    public void saveSaleOrder(SaleOrder order) {
-        if (order == null) return;
+    /**
+     * บันทึกบิล + รายการสินค้าในบิล
+     * คืน true ถ้าบันทึกสำเร็จ, false ถ้าไม่สำเร็จ (order เป็น null, เลขบิลซ้ำ, หรือเขียนไฟล์ไม่ได้)
+     */
+    public boolean saveSaleOrder(SaleOrder order) {
+        if (order == null || order.getId() == null) return false;
         try {
             DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
             String date = order.getOrderDate() == null
@@ -244,32 +264,29 @@ public class FileStorageService extends Service {
                 + "," + esc(order.getStatus() == null ? "paid" : order.getStatus()) + "," + esc(cashier);
             Path p = Paths.get(salesFile());
             if (!Files.exists(p)) ensureDataFiles();
-            // กันเขียน id ซ้ำ: ถ้ามีแล้วให้ข้าม
+            // กันเขียน id ซ้ำ: ถ้ามีแล้วให้ไม่บันทึก
             List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8);
-            for (String l : lines) {
-                if (l.startsWith(order.getId() + ",")) return;
+            for (int i = 1; i < lines.size(); i++) {
+                String l = lines.get(i).trim();
+                if (l.isEmpty()) continue;
+                if (unesc(splitCsv(l)[0]).equals(order.getId())) return false;
             }
-            Files.write(p, (System.lineSeparator() + line).getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.APPEND);
+            appendLines(p, List.of(line));
 
             // บันทึกรายการสินค้าในบิล (ใช้คืนสต็อกตอนลบบิล)
             Path ip = Paths.get(saleItemsFile());
             if (!Files.exists(ip)) ensureDataFiles();
-            StringBuilder sb = new StringBuilder();
+            List<String> itemLines = new ArrayList<>();
             for (SaleOrderItem it : order.getItems()) {
                 if (it.getProduct() == null) continue;
-                sb.append(System.lineSeparator())
-                  .append(esc(order.getId())).append(",")
-                  .append(esc(it.getProduct().getId())).append(",")
-                  .append(it.getQuantity()).append(",")
-                  .append(it.getUnitPrice());
+                itemLines.add(esc(order.getId()) + "," + esc(it.getProduct().getId()) + ","
+                    + it.getQuantity() + "," + it.getUnitPrice());
             }
-            if (sb.length() > 0) {
-                Files.write(ip, sb.toString().getBytes(StandardCharsets.UTF_8),
-                    StandardOpenOption.APPEND);
-            }
+            appendLines(ip, itemLines);
+            return true;
         } catch (IOException e) {
             e.printStackTrace();
+            return false;
         }
     }
 
@@ -357,6 +374,70 @@ public class FileStorageService extends Service {
                 Files.write(ip, keepItems, StandardCharsets.UTF_8);
             }
             Files.write(sp, keepSales, StandardCharsets.UTF_8);
+            return restored;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return -1;
+        }
+    }
+
+    /** สถานะของบิลที่ถูกยกเลิก */
+    public static final String STATUS_CANCELLED = "cancelled";
+
+    /**
+     * ยกเลิกบิล: เปลี่ยนสถานะเป็น cancelled (บิลยังอยู่ในประวัติ) และคืนสต็อกตามรายการในบิล
+     * คืน -1 ถ้าไม่พบบิล/เขียนไฟล์ไม่ได้, -2 ถ้าบิลนี้ถูกยกเลิกไปแล้ว (กันคืนสต็อกซ้ำ),
+     * นอกนั้นคืนจำนวนรายการสินค้าที่คืนสต็อกได้
+     */
+    public int cancelSaleOrder(String orderId) {
+        if (orderId == null) return -1;
+        try {
+            Path sp = Paths.get(salesFile());
+            if (!Files.exists(sp)) return -1;
+            List<String> lines = Files.readAllLines(sp, StandardCharsets.UTF_8);
+            int idx = -1;
+            String[] cols = null;
+            for (int i = 1; i < lines.size(); i++) {
+                String l = lines.get(i).trim();
+                if (l.isEmpty()) continue;
+                String[] c = splitCsv(l);
+                if (c.length >= 4 && unesc(c[0]).equals(orderId)) { idx = i; cols = c; break; }
+            }
+            if (idx < 0) return -1;
+            if (STATUS_CANCELLED.equalsIgnoreCase(unesc(cols[3]))) return -2;
+
+            // คืนสต็อก (รายการสินค้าในบิลยังเก็บไว้ใน sale_items.csv ตามเดิม)
+            int restored = 0;
+            Path ip = Paths.get(saleItemsFile());
+            if (Files.exists(ip)) {
+                List<String> items = Files.readAllLines(ip, StandardCharsets.UTF_8);
+                List<Product> products = loadProducts();
+                for (int i = 1; i < items.size(); i++) {
+                    String line = items.get(i).trim();
+                    if (line.isEmpty()) continue;
+                    String[] c = splitCsv(line);
+                    if (c.length < 3 || !unesc(c[0]).equals(orderId)) continue;
+                    try {
+                        String pid = unesc(c[1]);
+                        int qty = Integer.parseInt(unesc(c[2]));
+                        for (Product p : products) {
+                            if (p.getId().equals(pid)) {
+                                p.addStock(qty);
+                                restored++;
+                                break;
+                            }
+                        }
+                    } catch (NumberFormatException ex) {
+                        // ข้ามแถวเสีย
+                    }
+                }
+                if (restored > 0) saveAllProducts(products);
+            }
+
+            // เปลี่ยนสถานะ (ฟิลด์อื่นเก็บตามเดิม)
+            cols[3] = esc(STATUS_CANCELLED);
+            lines.set(idx, String.join(",", cols));
+            Files.write(sp, lines, StandardCharsets.UTF_8);
             return restored;
         } catch (IOException e) {
             e.printStackTrace();
