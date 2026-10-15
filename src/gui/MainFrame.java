@@ -9,9 +9,15 @@ import java.util.List;
 import model.User;
 
 /**
- * MainFrame - เฟรมหลักหลัง login
- * ซ้าย: sidebar เลือก 3 หน้า (สลับ tab ด้วย CardLayout ได้ตลอด)
- * ขวา: PosPanel / InventoryPanel / HistoryPanel
+ * MainFrame - เฟรมหลักหลัง login (โครง sidebar + สลับ 3 หน้า)
+ * ------------------------------------------------------------------
+ * ซ้าย: sidebar (ปุ่ม 3 ปุ่ม + ชื่อ user + ปุ่ม logout)
+ * ขวา: CardLayout สลับ PosPanel / InventoryPanel / HistoryPanel
+ *
+ * จะแก้ครั้งหน้า:
+ * - เพิ่มหน้าใหม่: สร้าง Panel ใหม่ -> add ลง cardPanel -> เพิ่มปุ่มใน createSidebar()
+ * - สิทธิ์เข้าหน้าสต็อก: ดู showPage() (admin เท่านั้น) + User.isAdmin()
+ * - ทุกครั้งที่สลับหน้าจะ refresh ข้อมูลให้สดอัตโนมัติ (ดูท้าย showPage)
  */
 public class MainFrame extends JFrame {
 

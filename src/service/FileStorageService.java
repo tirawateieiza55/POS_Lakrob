@@ -1,34 +1,88 @@
 package service;
 
-import java.io.*;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import model.Product;
 import model.SaleOrder;
 import model.SaleOrderItem;
 import model.User;
 
+import static service.CsvUtil.esc;
+import static service.CsvUtil.unesc;
+import static service.CsvUtil.splitCsv;
+import static service.CsvUtil.appendLines;
+
 /**
- * FileStorageService - Service & Persistence Layer
- * อ่าน-เขียน CSV ในโฟลเดอร์ data/
- *  - users.csv      : id,username,password,role
- *  - products.csv   : id,name,category,price,stock
- *  - sales.csv      : id,orderDate,totalAmount,status,cashier
- *  - sale_items.csv : orderId,productId,qty,unitPrice
+ * FileStorageService - ชั้นเก็บไฟล์ CSV ทั้งหมดของระบบ (Persistence)
+ * ------------------------------------------------------------------
+ * หน้าที่: อ่าน/เขียนไฟล์ในโฟลเดอร์ data/ เท่านั้น ไม่มี logic ขายของ
+ *
+ * ไฟล์ที่ดูแล (4 ไฟล์):
+ *   data/users.csv      : id,username,password,role
+ *   data/products.csv   : id,name,category,price,stock
+ *   data/sales.csv      : id,orderDate,totalAmount,status,cashier
+ *   data/sale_items.csv : orderId,productId,qty,unitPrice
+ *
+ * วิธีใช้ที่ถูกต้อง (อ่านก่อนแก้):
+ *   FileStorageService db = FileStorageService.getInstance();
+ *   List<Product> ps = db.loadProducts();
+ * ห้าม new FileStorageService() กระจายหลายที่แบบเดิม เพราะจะได้คนละ
+ * instance กัน เสี่ยงอ่าน/เขียนชนกัน ให้เรียก getInstance() ตัวเดียว
+ *
+ * ถ้าจะเพิ่มตารางใหม่:
+ * 1) เพิ่มเมธอด xxxFile() + เพิ่มใน ensureDataFiles()
+ * 2) เพิ่ม loadXxx()/saveXxx() ในโซนของตัวเอง (ดูโซนด้านล่าง)
+ * 3) อย่าใส่ logic ธุรกิจ (เช่น คำนวณยอด) ที่นี่ ให้ไปไว้ใน model/gui
+ *
+ * เรื่อง encoding: ไฟล์ทั้งหมดเป็น UTF-8 ชื่อสินค้าไทยมี comma ได้
+ * การตัด/ครอบ quote ย้ายไปอยู่ใน CsvUtil หมดแล้ว
  */
-public class FileStorageService extends Service {
+public class FileStorageService {
+
+    /** สถานะบิลที่ถูกยกเลิก (เก็บใน sales.csv ช่อง status) */
+    public static final String STATUS_CANCELLED = "cancelled";
+    /** สถานะบิลที่จ่ายแล้ว */
+    public static final String STATUS_PAID = "paid";
+
+    private static final DateTimeFormatter DATE_FMT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    // ==================================================================
+    // Singleton: ใช้ตัวเดียวทั้งแอป
+    // ==================================================================
+    private static volatile FileStorageService instance;
+
+    /** ใช้ตัวนี้เป็นหลัก: ได้ instance เดียวกันทั้งแอป */
+    public static FileStorageService getInstance() {
+        if (instance == null) {
+            synchronized (FileStorageService.class) {
+                if (instance == null) instance = new FileStorageService();
+            }
+        }
+        return instance;
+    }
 
     private String basePath;
 
+    /** constructor หลัก: ใช้ data/ ข้างโฟลเดอร์ที่รันโปรแกรม */
     public FileStorageService() {
         this.basePath = "data/";
         ensureDataFiles();
     }
 
+    /**
+     * constructor สำหรับเทส: ระบุโฟลเดอร์เก็บไฟล์เองได้
+     * ตัวอย่าง: new FileStorageService("data_test/")
+     */
     public FileStorageService(String basePath) {
         if (basePath == null || basePath.isBlank()) basePath = "data/";
         if (!basePath.endsWith("/") && !basePath.endsWith("\\")) basePath += "/";
@@ -36,36 +90,44 @@ public class FileStorageService extends Service {
         ensureDataFiles();
     }
 
-    private String usersFile() { return basePath + "users.csv"; }
-    private String productsFile() { return basePath + "products.csv"; }
-    private String salesFile() { return basePath + "sales.csv"; }
+    // ==================================================================
+    // ชื่อไฟล์ (แก้ path รวมที่นี่ที่เดียว)
+    // ==================================================================
+    private String usersFile()     { return basePath + "users.csv"; }
+    private String productsFile()  { return basePath + "products.csv"; }
+    private String salesFile()     { return basePath + "sales.csv"; }
     private String saleItemsFile() { return basePath + "sale_items.csv"; }
 
+    // ==================================================================
+    // สร้างโฟลเดอร์/ไฟล์เปล่าพร้อม header ถ้ายังไม่มี
+    // ==================================================================
     private void ensureDataFiles() {
         try {
             Path dir = Paths.get(basePath);
             if (!Files.exists(dir)) Files.createDirectories(dir);
 
+            // users.csv - แถม admin/user เริ่มต้นให้ 2 คน (ล็อกอินครั้งแรกได้เลย)
             Path uf = Paths.get(usersFile());
             if (!Files.exists(uf)) {
                 List<String> lines = new ArrayList<>();
                 lines.add("id,username,password,role");
                 lines.add("01,admin,admin123,Admin");
+                // ระวัง: ห้ามมี comma ในชื่อ role ถ้าไม่ครอบ quote
                 lines.add("02,user,user123,พนักงานขาย");
                 Files.write(uf, lines, StandardCharsets.UTF_8);
             }
+            // products.csv - เริ่มว่าง เพิ่มผ่านหน้า "คลังสินค้า"
             Path pf = Paths.get(productsFile());
             if (!Files.exists(pf)) {
-                List<String> lines = new ArrayList<>();
-                lines.add("id,name,category,price,stock");
-                Files.write(pf, lines, StandardCharsets.UTF_8);
+                Files.write(pf, List.of("id,name,category,price,stock"), StandardCharsets.UTF_8);
             }
+            // sales.csv - หัวบิล
             Path sf = Paths.get(salesFile());
             if (!Files.exists(sf)) {
-                Files.write(sf,
-                    List.of("id,orderDate,totalAmount,status,cashier"),
-                    StandardCharsets.UTF_8);
+                Files.write(sf, List.of("id,orderDate,totalAmount,status,cashier"),
+                        StandardCharsets.UTF_8);
             }
+            // sale_items.csv - รายการสินค้าในแต่ละบิล (เอาไว้คืนสต็อกตอนยกเลิกบิล)
             Path sif = Paths.get(saleItemsFile());
             if (!Files.exists(sif)) {
                 Files.write(sif, List.of("orderId,productId,qty,unitPrice"), StandardCharsets.UTF_8);
@@ -75,62 +137,11 @@ public class FileStorageService extends Service {
         }
     }
 
-    // ---------- CSV helpers ----------
-    private static String[] splitCsv(String line) {
-        // แบบง่าย (ชื่อสินค้าไม่มี comma นอกจากหมวดหมู่ที่ใช้ comma จริง)
-        // หมวดหมู่ "เนื้อ,หมู,ไก่,ทะเล" มี comma -> ต้องรองรับ quote
-        List<String> out = new ArrayList<>();
-        StringBuilder cur = new StringBuilder();
-        boolean inQuote = false;
-        for (int i = 0; i < line.length(); i++) {
-            char c = line.charAt(i);
-            if (c == '"') {
-                // เก็บเครื่องหมาย " ไว้ แล้วให้ unesc() เป็นคนแกะ (รองรับ "" แทน " ในข้อความ)
-                inQuote = !inQuote;
-                cur.append(c);
-            } else if (c == ',' && !inQuote) {
-                out.add(cur.toString().trim());
-                cur.setLength(0);
-            } else {
-                cur.append(c);
-            }
-        }
-        out.add(cur.toString().trim());
-        return out.toArray(new String[0]);
-    }
+    // ==================================================================
+    // โซนที่ 1: User (ล็อกอิน)
+    // ==================================================================
 
-    private static String esc(String s) {
-        if (s == null) return "";
-        if (s.contains(",") || s.contains("\"")) {
-            return "\"" + s.replace("\"", "\"\"") + "\"";
-        }
-        return s;
-    }
-
-    /** ต่อท้ายไฟล์ทีละบรรทัด: ถ้าไฟล์เดิมไม่ลงท้ายด้วย newline จะเติมให้ก่อน (กันเกิดบรรทัดว่างสะสม/บรรทัดติดกัน) */
-    private static void appendLines(Path p, List<String> lines) throws IOException {
-        if (lines == null || lines.isEmpty()) return;
-        StringBuilder sb = new StringBuilder();
-        if (Files.exists(p) && Files.size(p) > 0) {
-            try (RandomAccessFile raf = new RandomAccessFile(p.toFile(), "r")) {
-                raf.seek(raf.length() - 1);
-                if (raf.read() != '\n') sb.append(System.lineSeparator());
-            }
-        }
-        for (String l : lines) sb.append(l).append(System.lineSeparator());
-        Files.write(p, sb.toString().getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
-    }
-
-    private static String unesc(String s) {
-        if (s == null) return "";
-        s = s.trim();
-        if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
-            s = s.substring(1, s.length() - 1).replace("\"\"", "\"");
-        }
-        return s;
-    }
-
-    // ---------- User ----------
+    /** โหลด user ทั้งหมด (ข้ามบรรทัดเสีย ไม่ throw) */
     public List<User> loadUsers() {
         List<User> list = new ArrayList<>();
         try {
@@ -150,7 +161,10 @@ public class FileStorageService extends Service {
         return list;
     }
 
-    /** คืน User ถ้า username/password ตรง, ไม่ตรงคืน null */
+    /**
+     * เช็คล็อกอิน: คืน User ถ้า username/password ตรง, ไม่ตรงคืน null
+     * หมายเหตุ: เทียบ username แบบ trim ช่องว่างหัวท้ายให้แล้ว
+     */
     public User authenticate(String username, String password) {
         if (username == null || password == null) return null;
         for (User u : loadUsers()) {
@@ -161,6 +175,7 @@ public class FileStorageService extends Service {
         return null;
     }
 
+    /** เก็บ user (id ซ้ำ = อัปเดต, id ใหม่ = เพิ่ม) แล้วเขียนไฟล์ใหม่ทั้งไฟล์ */
     public void saveUser(User user) {
         if (user == null) return;
         List<User> all = loadUsers();
@@ -173,7 +188,8 @@ public class FileStorageService extends Service {
             List<String> lines = new ArrayList<>();
             lines.add("id,username,password,role");
             for (User u : all) {
-                lines.add(esc(u.getId()) + "," + esc(u.getUsername()) + "," + esc(u.getPassword()) + "," + esc(u.getRole()));
+                lines.add(esc(u.getId()) + "," + esc(u.getUsername()) + ","
+                        + esc(u.getPassword()) + "," + esc(u.getRole()));
             }
             Files.write(Paths.get(usersFile()), lines, StandardCharsets.UTF_8);
         } catch (IOException e) {
@@ -181,12 +197,17 @@ public class FileStorageService extends Service {
         }
     }
 
+    /** คืน user คนแรก (ใช้ตอนเทสเร็วๆ ถ้าไม่มีคืน null) */
     public User loadUser() {
         List<User> all = loadUsers();
         return all.isEmpty() ? null : all.get(0);
     }
 
-    // ---------- Product ----------
+    // ==================================================================
+    // โซนที่ 2: Product (สินค้า)
+    // ==================================================================
+
+    /** โหลดสินค้าทั้งหมดจาก products.csv */
     public List<Product> loadProducts() {
         List<Product> list = new ArrayList<>();
         try {
@@ -206,7 +227,7 @@ public class FileStorageService extends Service {
                     int stock = Integer.parseInt(unesc(c[4]));
                     list.add(new Product(id, name, cat, price, stock));
                 } catch (NumberFormatException ex) {
-                    // ข้ามแถวเสีย
+                    // ข้ามแถวที่ราค/สต็อกเสีย ไม่ให้โปรแกรมล่ม
                 }
             }
         } catch (IOException e) {
@@ -215,6 +236,7 @@ public class FileStorageService extends Service {
         return list;
     }
 
+    /** เขียนสินค้าทั้ง list ลงไฟล์ใหม่ทั้งไฟล์ (ใช้หลังตัดสต็อก/คืนสต็อก) */
     public void saveAllProducts(List<Product> products) {
         try {
             List<String> lines = new ArrayList<>();
@@ -222,7 +244,7 @@ public class FileStorageService extends Service {
             if (products != null) {
                 for (Product p : products) {
                     lines.add(esc(p.getId()) + "," + esc(p.getName()) + "," + esc(p.getCategory())
-                        + "," + p.getPrice() + "," + p.getStock());
+                            + "," + p.getPrice() + "," + p.getStock());
                 }
             }
             Files.write(Paths.get(productsFile()), lines, StandardCharsets.UTF_8);
@@ -231,6 +253,7 @@ public class FileStorageService extends Service {
         }
     }
 
+    /** เก็บสินค้า 1 ตัว (id ซ้ำ = อัปเดต) */
     public void saveProduct(Product product) {
         if (product == null) return;
         List<Product> all = loadProducts();
@@ -242,29 +265,35 @@ public class FileStorageService extends Service {
         saveAllProducts(all);
     }
 
+    /** ลบสินค้าด้วย id (ไม่เจอ = เงียบไว้) */
     public void deleteProduct(String productId) {
         List<Product> all = loadProducts();
         all.removeIf(p -> p.getId().equals(productId));
         saveAllProducts(all);
     }
 
-    // ---------- SaleOrder (หัวบิล + รายการสินค้าในบิล) ----------
+    // ==================================================================
+    // โซนที่ 3: SaleOrder (หัวบิล + รายการในบิล)
+    // ==================================================================
+
     /**
      * บันทึกบิล + รายการสินค้าในบิล
-     * คืน true ถ้าบันทึกสำเร็จ, false ถ้าไม่สำเร็จ (order เป็น null, เลขบิลซ้ำ, หรือเขียนไฟล์ไม่ได้)
+     * ลำดับ: เช็คว่าเลขบิลซ้ำไหม -> ต่อท้าย sales.csv -> ต่อท้าย sale_items.csv
+     * คืน true = สำเร็จ, false = บิล null / เลขบิลซ้ำ / เขียนไฟล์ไม่ได้
+     * สำคัญ: ถ้าคืน false ห้ามตัดสต็อก (caller ต้องเช็คก่อนตัดเสมอ)
      */
     public boolean saveSaleOrder(SaleOrder order) {
         if (order == null || order.getId() == null) return false;
         try {
-            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
             String date = order.getOrderDate() == null
-                ? LocalDateTime.now().format(fmt) : order.getOrderDate().format(fmt);
+                    ? LocalDateTime.now().format(DATE_FMT) : order.getOrderDate().format(DATE_FMT);
             String cashier = order.getCreatedBy() == null ? "" : order.getCreatedBy().getUsername();
             String line = esc(order.getId()) + "," + esc(date) + "," + order.getTotalAmount()
-                + "," + esc(order.getStatus() == null ? "paid" : order.getStatus()) + "," + esc(cashier);
+                    + "," + esc(order.getStatus() == null ? STATUS_PAID : order.getStatus())
+                    + "," + esc(cashier);
             Path p = Paths.get(salesFile());
             if (!Files.exists(p)) ensureDataFiles();
-            // กันเขียน id ซ้ำ: ถ้ามีแล้วให้ไม่บันทึก
+            // กันเขียนเลขบิลซ้ำ: ถ้ามีแล้วให้ไม่บันทึก (caller จะได้รู้ว่าต้องลองเลขใหม่)
             List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8);
             for (int i = 1; i < lines.size(); i++) {
                 String l = lines.get(i).trim();
@@ -273,14 +302,14 @@ public class FileStorageService extends Service {
             }
             appendLines(p, List.of(line));
 
-            // บันทึกรายการสินค้าในบิล (ใช้คืนสต็อกตอนลบบิล)
+            // บันทึกรายการสินค้าในบิล (เอาไว้คืนสต็อกตอนยกเลิกบิล + ดูรายละเอียดย้อนหลัง)
             Path ip = Paths.get(saleItemsFile());
             if (!Files.exists(ip)) ensureDataFiles();
             List<String> itemLines = new ArrayList<>();
             for (SaleOrderItem it : order.getItems()) {
                 if (it.getProduct() == null) continue;
                 itemLines.add(esc(order.getId()) + "," + esc(it.getProduct().getId()) + ","
-                    + it.getQuantity() + "," + it.getUnitPrice());
+                        + it.getQuantity() + "," + it.getUnitPrice());
             }
             appendLines(ip, itemLines);
             return true;
@@ -290,13 +319,30 @@ public class FileStorageService extends Service {
         }
     }
 
+    /**
+     * โหลดบิลทั้งหมด "พร้อมรายการสินค้า + คนขาย"
+     * - อ่าน sales.csv เป็นหัวบิลก่อน
+     * - แล้ว join sale_items.csv + products.csv เติม items และ createdBy ให้
+     * - บิลเก่าที่ขายก่อนมีระบบ sale_items จะได้ items ว่าง (ไม่ล่ม)
+     */
     public List<SaleOrder> loadSaleOrders() {
         List<SaleOrder> list = new ArrayList<>();
         try {
             Path p = Paths.get(salesFile());
             if (!Files.exists(p)) { ensureDataFiles(); return list; }
+
+            // เตรียม map สินค้า (id -> Product) ไว้ join กับ sale_items
+            Map<String, Product> productMap = new HashMap<>();
+            for (Product pr : loadProducts()) productMap.put(pr.getId(), pr);
+
+            // เตรียม map รายการสินค้าในแต่ละบิล (orderId -> items)
+            Map<String, List<SaleOrderItem>> itemsMap = loadSaleItemsGrouped(productMap);
+
+            // เตรียม map user (username -> User) ไว้เติม createdBy
+            Map<String, User> userMap = new HashMap<>();
+            for (User u : loadUsers()) userMap.put(u.getUsername(), u);
+
             List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8);
-            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
             for (int i = 1; i < lines.size(); i++) {
                 String line = lines.get(i).trim();
                 if (line.isEmpty()) continue;
@@ -305,9 +351,17 @@ public class FileStorageService extends Service {
                 try {
                     SaleOrder o = new SaleOrder();
                     o.setId(unesc(c[0]));
-                    o.setOrderDate(LocalDateTime.parse(unesc(c[1]), fmt));
+                    o.setOrderDate(LocalDateTime.parse(unesc(c[1]), DATE_FMT));
                     o.setTotalAmount(Double.parseDouble(unesc(c[2])));
                     o.setStatus(unesc(c[3]));
+                    String cashierName = unesc(c[4]);
+                    if (!cashierName.isEmpty()) o.setCreatedBy(userMap.get(cashierName));
+
+                    // เติมรายการสินค้า (ถ้าไม่มี = บิลเก่า ได้ list ว่าง)
+                    List<SaleOrderItem> items = itemsMap.get(o.getId());
+                    if (items != null) {
+                        for (SaleOrderItem it : items) o.getItems().add(it);
+                    }
                     list.add(o);
                 } catch (Exception ex) {
                     // ข้ามแถวเสีย
@@ -320,8 +374,55 @@ public class FileStorageService extends Service {
     }
 
     /**
-     * ลบบิลและคืนสต็อกตามรายการในบิล
-     * คืน -1 ถ้าไม่พบบิล/เขียนไฟล์ไม่ได้, นอกนั้นคืนจำนวนรายการสินค้าที่คืนสต็อกได้
+     * โหลดบิลใบเดียวพร้อมรายการสินค้า (ใช้ในหน้า History ปุ่มดูรายละเอียด)
+     * คืน null ถ้าไม่เจอเลขบิล
+     */
+    public SaleOrder loadSaleOrderById(String orderId) {
+        if (orderId == null) return null;
+        for (SaleOrder o : loadSaleOrders()) {
+            if (orderId.equals(o.getId())) return o;
+        }
+        return null;
+    }
+
+    /** อ่าน sale_items.csv แล้วจัดกลุ่มตาม orderId (helper ของ loadSaleOrders) */
+    private Map<String, List<SaleOrderItem>> loadSaleItemsGrouped(Map<String, Product> productMap) {
+        Map<String, List<SaleOrderItem>> map = new HashMap<>();
+        try {
+            Path ip = Paths.get(saleItemsFile());
+            if (!Files.exists(ip)) return map;
+            List<String> lines = Files.readAllLines(ip, StandardCharsets.UTF_8);
+            for (int i = 1; i < lines.size(); i++) {
+                String line = lines.get(i).trim();
+                if (line.isEmpty()) continue;
+                String[] c = splitCsv(line);
+                if (c.length < 4) continue;
+                try {
+                    String orderId = unesc(c[0]);
+                    String pid = unesc(c[1]);
+                    int qty = Integer.parseInt(unesc(c[2]));
+                    double unitPrice = Double.parseDouble(unesc(c[3]));
+                    // ผูกกับ Product ตัวจริงถ้ายังมีอยู่ (ถ้าถูกลบไปแล้วก็สร้างตัวแทนไว้ดูชื่อไม่ได้ -> ข้าม)
+                    Product pr = productMap.get(pid);
+                    if (pr == null) pr = new Product(pid, "(สินค้าถูกลบ)", "", unitPrice, 0);
+                    SaleOrderItem it = new SaleOrderItem(orderId + "-" + (map.getOrDefault(orderId, List.of()).size() + 1),
+                            pr, qty, unitPrice);
+                    map.computeIfAbsent(orderId, k -> new ArrayList<>()).add(it);
+                } catch (NumberFormatException ex) {
+                    // ข้ามแถวเสีย
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return map;
+    }
+
+    /**
+     * ลบบิลถาวร + คืนสต็อกตามรายการในบิล
+     * คืน -1 = ไม่พบบิล/เขียนไฟล์ไม่ได้, นอกนั้น = จำนวนรายการที่คืนสต็อกได้
+     * หมายเหตุ: ปกติให้ใช้ cancelSaleOrder() แทน (เก็บบิลไว้ดูย้อนหลัง)
+     * เมธอดนี้เก็บไว้เผื่อต้องลบจริงๆ
      */
     public int deleteSaleOrder(String orderId) {
         if (orderId == null) return -1;
@@ -381,13 +482,11 @@ public class FileStorageService extends Service {
         }
     }
 
-    /** สถานะของบิลที่ถูกยกเลิก */
-    public static final String STATUS_CANCELLED = "cancelled";
-
     /**
-     * ยกเลิกบิล: เปลี่ยนสถานะเป็น cancelled (บิลยังอยู่ในประวัติ) และคืนสต็อกตามรายการในบิล
-     * คืน -1 ถ้าไม่พบบิล/เขียนไฟล์ไม่ได้, -2 ถ้าบิลนี้ถูกยกเลิกไปแล้ว (กันคืนสต็อกซ้ำ),
-     * นอกนั้นคืนจำนวนรายการสินค้าที่คืนสต็อกได้
+     * ยกเลิกบิล: เปลี่ยนสถานะเป็น cancelled (บิลยังอยู่ในประวัติ) + คืนสต็อก
+     * คืน -1 = ไม่พบบิล/เขียนไฟล์ไม่ได้,
+     *     -2 = บิลนี้ถูกยกเลิกไปแล้ว (กันคืนสต็อกซ้ำ),
+     *     นอกนั้น = จำนวนรายการที่คืนสต็อกได้
      */
     public int cancelSaleOrder(String orderId) {
         if (orderId == null) return -1;
@@ -406,7 +505,7 @@ public class FileStorageService extends Service {
             if (idx < 0) return -1;
             if (STATUS_CANCELLED.equalsIgnoreCase(unesc(cols[3]))) return -2;
 
-            // คืนสต็อก (รายการสินค้าในบิลยังเก็บไว้ใน sale_items.csv ตามเดิม)
+            // คืนสต็อก (รายการใน sale_items.csv เก็บไว้เหมือนเดิม ไม่ลบ)
             int restored = 0;
             Path ip = Paths.get(saleItemsFile());
             if (Files.exists(ip)) {
@@ -443,24 +542,6 @@ public class FileStorageService extends Service {
             e.printStackTrace();
             return -1;
         }
-    }
-
-    // --- override จาก Service (abstract) ---
-    @Override
-    public void save(Object data) {
-        if (data instanceof Product) saveProduct((Product) data);
-        else if (data instanceof SaleOrder) saveSaleOrder((SaleOrder) data);
-        else if (data instanceof User) saveUser((User) data);
-    }
-
-    @Override
-    public Object load() {
-        return loadProducts();
-    }
-
-    @Override
-    public void delete(String id) {
-        deleteProduct(id);
     }
 
     // --- getter/setter ---

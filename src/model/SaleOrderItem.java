@@ -1,9 +1,15 @@
 package model;
 
 /**
- * SaleOrderItem - Domain Model Layer
- * แถวรายการย่อยของสินค้าแต่ละชิ้นในบิล (ลูกของ SaleOrder แบบ Composition)
- * ตาม Class Diagram: id, product, quantity, unitPrice, subtotal
+ * SaleOrderItem - สินค้า 1 แถวในบิล (ลูกของ SaleOrder แบบ Composition)
+ * ------------------------------------------------------------------
+ * ต่างจาก CartItem ยังไง (จำแค่นี้):
+ * - CartItem      = ของใน "ตะกร้า" ตอนกำลังเลือก ยังไม่จ่าย ลบ/แก้ได้อิสระ
+ * - SaleOrderItem = ของใน "บิลที่จ่ายแล้ว" ถูกบันทึก sale_items.csv ห้ามแก้
+ *
+ * ฟิลด์: id (เช่น "Order 3-1"), product (อ้าง Product), quantity,
+ *        unitPrice (ราคาตอนขาย ถ่ายไว้กันราคาขึ้นลงย้อนหลังเพี้ยน),
+ *        subtotal (unitPrice * quantity คำนวณสดทุกครั้ง)
  */
 public class SaleOrderItem {
 
@@ -13,24 +19,24 @@ public class SaleOrderItem {
     private double unitPrice;
     private double subtotal;
 
+    /** constructor เปล่า: มีไว้ให้ตอนโหลดไฟล์ */
     public SaleOrderItem() {
-        //  constructor เปล่า
     }
 
     public SaleOrderItem(String id, Product product, int quantity, double unitPrice) {
-        //  กำหนดค่าเริ่มต้น
         this.id = id;
         this.product = product;
         this.quantity = quantity;
         this.unitPrice = unitPrice;
     }
 
+    /** ยอดแถวนี้ = ราคาต่อชิ้น x จำนวน (คำนวณใหม่ทุกครั้งที่เรียก) */
     public double getSubtotal() {
         this.subtotal = unitPrice * quantity;
         return subtotal;
     }
 
-    // --- getters / setters (ร่างไว้) ---
+    // --- getters / setters ---
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 

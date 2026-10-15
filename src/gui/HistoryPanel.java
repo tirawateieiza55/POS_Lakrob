@@ -12,8 +12,16 @@ import model.User;
 import service.FileStorageService;
 
 /**
- * HistoryPanel -  (แสดงประวัติจาก sales.csv)
- * เต็มๆ จะทำรอบถัดไป (กรองตามวัน + ดูรายละเอียด + รายงานยอด)
+ * HistoryPanel - ประวัติการขาย + รายงานยอด (อ่านจาก sales.csv + sale_items.csv)
+ * ------------------------------------------------------------------
+ * ตาราง: เลขบิล / วันเวลา / ยอดรวม / สถานะ / ปุ่มยกเลิก (กากบาท)
+ * แถบล่าง: จำนวนบิล + ยอดรวม (ไม่นับบิล cancelled)
+ * ยกเลิกบิล: cancelOrder() -> เปลี่ยนสถานะเป็น cancelled + คืนสต็อก (บิลยังอยู่)
+ *
+ * จะแก้ครั้งหน้า:
+ * - เพิ่มกรองตามวัน/ค้นหาบิล: แก้ loadHistory() (ตอนนี้โชว์ทั้งหมด)
+ * - ดูรายละเอียดบิล: ใช้ viewDetail() (ตอนนี้โหลด items ครบแล้วจาก sale_items.csv)
+ * - เปลี่ยนสี/คอลัมน์: แก้ cols + renderer ใน constructor
  */
 public class HistoryPanel extends JPanel {
 
@@ -27,7 +35,8 @@ public class HistoryPanel extends JPanel {
 
     private List<SaleOrder> sales;
     private User currentUser;
-    private FileStorageService storage = new FileStorageService();
+    // ใช้ singleton ตัวเดียวทั้งแอป (ห้าม new เอง)
+    private FileStorageService storage = FileStorageService.getInstance();
     private DefaultTableModel tableModel;
     private JTable table;
     private JLabel countLabel;
@@ -201,11 +210,13 @@ public class HistoryPanel extends JPanel {
         loadHistory();
     }
 
+    /** ดูบิลใบเดียวพร้อมรายการสินค้า (โหลดจาก sale_items.csv มาครบแล้ว) */
     public SaleOrder viewDetail(String orderId) {
         if (sales != null) {
             for (SaleOrder o : sales) if (o.getId().equals(orderId)) return o;
         }
-        return SaleOrder.loadById(orderId);
+        // fallback: โหลดจากไฟล์ตรง (SaleOrder ไม่มีเมธอดอ่านไฟล์เองแล้ว - ต้องผ่าน storage)
+        return storage.loadSaleOrderById(orderId);
     }
     public List<SaleOrder> getSales() { return sales; }
 }

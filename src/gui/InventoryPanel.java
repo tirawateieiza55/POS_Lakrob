@@ -12,10 +12,16 @@ import model.Product;
 import service.FileStorageService;
 
 /**
- * InventoryPanel - หน้าคลังสินค้า (ตามรูปที่ 2)
- * stats + search + table + เพิ่ม/แก้ไข/ปรับสต็อก/ลบ/รีเฟรช
- * popup ทั้ง 4 แบบตามดีไซน์ + ตอนลบเลือกสินค้าได้ใน dialog
- * เก็บลง products.csv ใช้ร่วมกับ PosPanel
+ * InventoryPanel - หน้าคลังสินค้า (admin เท่านั้น)
+ * ------------------------------------------------------------------
+ * โครง: stats 4 การ์ด + toolbar (ค้นหา/ปุ่ม) + ตารางสินค้า
+ * ข้อมูล: products.csv ผ่าน storage (loadProducts/saveProduct/deleteProduct)
+ * popup 4 แบบ: เพิ่ม / แก้ไข / ลบ / ปรับสต็อก (สร้างด้วย createPopup กลาง)
+ *
+ * จะแก้ครั้งหน้า:
+ * - เพิ่มหมวดหมู่: แก้ CATEGORIES ตรงนี้ + ปุ่มหมวดใน PosPanel.createMenuArea()
+ * - เปลี่ยนเกณฑ์ "ใกล้หมด/หมด": ดู Product.LOW_STOCK_LIMIT + refreshTable()/updateStats()
+ * - เพิ่มคอลัมน์ตาราง: แก้ cols ใน createTableScroll() + refreshTable()
  */
 public class InventoryPanel extends JPanel {
 
@@ -31,7 +37,8 @@ public class InventoryPanel extends JPanel {
     private static final Color POPUP_BTN_BG = new Color(0xC9BCBE);
 
     private List<Product> products = new ArrayList<>();
-    private FileStorageService storage = new FileStorageService();
+    // ใช้ singleton ตัวเดียวทั้งแอป (ห้าม new เอง)
+    private FileStorageService storage = FileStorageService.getInstance();
 
     private DefaultTableModel tableModel;
     private JTable table;

@@ -16,9 +16,18 @@ import model.User;
 import service.FileStorageService;
 
 /**
- * PosPanel - หน้าขายหน้าร้าน (ตามรูปที่ 1)
- * ซ้าย: header + หมวดหมู่ + การ์ดสินค้า (โหลดจาก products.csv ว่างตอนแรก เพิ่มผ่านหน้าสต็อก)
- * ขวา: ตะกร้า + ส่วนลด + ชำระเงิน -> popup ชำระ -> ใบเสร็จ
+ * PosPanel - หน้าขายหน้าร้าน (จอหลักที่พนักงานใช้)
+ * ------------------------------------------------------------------
+ * แบ่ง 2 ฝั่ง: ซ้าย = header+หมวดหมู่+การ์ดสินค้า / ขวา = ตะกร้า+ส่วนลด+ชำระเงิน
+ * ข้อมูล: โหลดจาก products.csv ผ่าน storage (refreshProducts)
+ * โฟลว์ขาย: addProduct -> checkout -> showPaymentDialog -> completeSale
+ *          -> showReceiptDialog (1.เซฟบิลก่อน 2.ตัดสต็อกทีหลัง กันสต็อกหายแต่บิลไม่เข้า)
+ *
+ * จะแก้ครั้งหน้า:
+ * - เพิ่มหมวดหมู่: แก้ลิสต์ใน createMenuArea() + CATEGORIES ใน InventoryPanel
+ * - เปลี่ยนเกณฑ์เลขบิล: ดู nextOrderId() (ใช้เลขมากสุด+1 กันเลขซ้ำหลังลบบิล)
+ * - เปลี่ยนใบเสร็จ: ดู buildReceiptText()
+ * - ตะกร้า vs บิล: ตะกร้า = CartItem (ชั่วคราว), บิล = SaleOrder+SaleOrderItem (ถาวร)
  */
 public class PosPanel extends JPanel {
 
@@ -39,7 +48,8 @@ public class PosPanel extends JPanel {
     private double discount;
 
     private User currentUser;
-    private FileStorageService storage = new FileStorageService();
+    // ใช้ singleton ตัวเดียวทั้งแอป (ห้าม new เอง กันอ่าน/เขียนไฟล์ชนกัน)
+    private FileStorageService storage = FileStorageService.getInstance();
 
     private String activeCategory = "ทั้งหมด";
     private String searchText = "";
@@ -680,13 +690,14 @@ public class PosPanel extends JPanel {
         if (d > sub) d = sub;
 
         // 1) บันทึกบิลก่อน ถ้าบันทึกไม่ได้ (เช่น เลขบิลซ้ำ/เขียนไฟล์ไม่ได้) จะไม่ตัดสต็อก
+        // ยอดใน model คำนวณจาก subtotal - discount ให้ตรงกับที่โชว์หน้าจอ (กันรายงานเพี้ยน)
         boolean saved = false;
         try {
             SaleOrder order = new SaleOrder(orderId, currentUser);
             order.setOrderDate(LocalDateTime.now());
             order.setStatus("paid");
-            for (CartItem c : cart) order.addItem(c.getProduct(), c.getQuantity());
-            order.setTotalAmount(netTotal);
+            for (CartItem c : cart) order.addItem(c);
+            order.setDiscount(d);
             saved = storage.saveSaleOrder(order);
         } catch (Exception e) {
             e.printStackTrace();

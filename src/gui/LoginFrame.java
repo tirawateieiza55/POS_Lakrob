@@ -4,6 +4,18 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
 
+/**
+ * LoginFrame - หน้าล็อกอิน (จอแรกของโปรแกรม)
+ * ------------------------------------------------------------------
+ * หน้าที่: รับ username/password -> เช็คกับ users.csv ผ่าน
+ * FileStorageService.authenticate() -> ถูกเปิด MainFrame แล้วปิดตัวเอง
+ *
+ * จะแก้ครั้งหน้า:
+ * - เปลี่ยนดีไซน์: แก้สีใน constructor (headerBg/bodyBg/buttonBg)
+ * - เปลี่ยนตรรกะล็อกอิน: แก้ login()/authenticate() ด้านล่าง
+ * - user เริ่มต้น: อยู่ใน FileStorageService.ensureDataFiles()
+ *   (admin/admin123, user/user123)
+ */
 public class LoginFrame extends JFrame {
     private JTextField usernameField;
     private JPasswordField passwordField;
@@ -164,7 +176,8 @@ public class LoginFrame extends JFrame {
     /** เช็คกับไฟล์ data/users.csv คืน User ถ้าตรง, ไม่ตรงคืน null */
     public model.User authenticate(String username, String password) {
         try {
-            service.FileStorageService fs = new service.FileStorageService();
+            // ใช้ singleton ตัวเดียวทั้งแอป (ห้าม new เอง)
+            service.FileStorageService fs = service.FileStorageService.getInstance();
             return fs.authenticate(username, password);
         } catch (Exception e) {
             e.printStackTrace();
