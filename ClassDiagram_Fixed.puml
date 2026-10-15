@@ -1,0 +1,180 @@
+@startuml POS_Lakrob_Fixed
+' === Entry ===
+class Main {
+  +main(args:String[]):void
+}
+
+' === GUI ===
+class LoginFrame extends JFrame {
+  -usernameField:JTextField
+  -passwordField:JPasswordField
+  +login():boolean
+  +authenticate(username:String,password:String):User
+  +authenticate():boolean
+}
+class MainFrame extends JFrame {
+  -currentUser:User
+  -cardPanel:JPanel
+  -posPanel:PosPanel
+  -inventoryPanel:InventoryPanel
+  -historyPanel:HistoryPanel
+  +MainFrame(user:User)
+  +showPage(page:String):void
+  +logout():void
+  +getCurrentUser():User
+}
+class PosPanel extends JPanel {
+  -products:List<Product>
+  -cart:List<CartItem>
+  -totalAmount:double
+  -discount:double
+  +refreshProducts():void
+  +addProduct(product:Product,qty:int):void
+  +removeItem(productId:String):void
+  +updateQuantity(productId:String,qty:int):void
+  +calculateTotal():double
+  +clearCart():void
+  +checkout():void
+  +nextOrderId():String
+}
+class InventoryPanel extends JPanel {
+  -products:List<Product>
+  +loadProducts():void
+  +addProduct(product:Product):void
+  +updateProduct(product:Product):void
+  +deleteProduct(productId:String):void
+}
+class HistoryPanel extends JPanel {
+  -sales:List<SaleOrder>
+  +loadHistory():void
+  +viewDetail(orderId:String):SaleOrder
+  +cancelOrder(orderId:String):void
+}
+class StyledButton extends JButton {
+  -baseColor:Color
+  -arc:int
+  +setBaseColor(c:Color):void
+}
+class AppFont {
+  +thai(style:int,size:int):Font
+  +monoThai(size:int):Font
+  +applyGlobalDefault():void
+}
+
+' === Domain ===
+class Product {
+  -id:String
+  -name:String
+  -category:String
+  -price:double
+  -stock:int
+  +LOW_STOCK_LIMIT:int
+  +isInStock():boolean
+  +isLowStock():boolean
+  +addStock(qty:int):void
+  +reduceStock(qty:int):void
+  +getStatus():String
+}
+class CartItem {
+  -product:Product
+  -quantity:int
+  -unitPrice:double
+  -subtotal:double
+  +getSubtotal():double
+  +setQuantity(qty:int):void
+  +increase(delta:int):void
+  +toSaleOrderItem(orderId:String,index:int):SaleOrderItem
+}
+class SaleOrder {
+  -id:String
+  -orderDate:LocalDateTime
+  -items:List<SaleOrderItem>
+  -subtotal:double
+  -discount:double
+  -totalAmount:double
+  -status:String
+  -createdBy:User
+  +addItem(product:Product,qty:int):void
+  +addItem(cartItem:CartItem):void
+  +removeItem(productId:String):void
+  +calculateTotal():double
+  +calculateNetTotal():double
+  +isCancelled():boolean
+}
+class SaleOrderItem {
+  -id:String
+  -product:Product
+  -quantity:int
+  -unitPrice:double
+  -subtotal:double
+  +getSubtotal():double
+}
+class User {
+  -id:String
+  -username:String
+  -password:String
+  -role:String
+  +checkPermission():boolean
+  +isAdmin():boolean
+  +checkPassword(pw:String):boolean
+  +getRole():String
+  +getDisplayRole():String
+}
+
+' === Service / Persistence ===
+abstract class "Service<T>" as Service {
+  +save(data:T):void
+  +loadAll():List<T>
+  +delete(id:String):void
+}
+class FileStorageService {
+  -basePath:String
+  +STATUS_PAID:String
+  +STATUS_CANCELLED:String
+  +getInstance():FileStorageService
+  +authenticate(u:String,p:String):User
+  +loadUsers():List<User>
+  +saveUser(user:User):void
+  +loadProducts():List<Product>
+  +saveProduct(p:Product):void
+  +saveAllProducts(list:List<Product>):void
+  +deleteProduct(id:String):void
+  +saveSaleOrder(order:SaleOrder):boolean
+  +loadSaleOrders():List<SaleOrder>
+  +loadSaleOrderById(id:String):SaleOrder
+  +cancelSaleOrder(id:String):int
+}
+class CsvUtil {
+  +splitCsv(line:String):String[]
+  +esc(s:String):String
+  +unesc(s:String):String
+  +appendLines(p:Path,lines:List):void
+}
+
+' === Relations ===
+Main ..> LoginFrame : creates
+Main ..> FileStorageService : init
+Main ..> AppFont : init
+LoginFrame ..> MainFrame : opens
+LoginFrame ..> FileStorageService : use
+MainFrame *-- PosPanel : contains
+MainFrame *-- InventoryPanel : contains
+MainFrame *-- HistoryPanel : contains
+PosPanel *-- CartItem : contains
+CartItem --> "1" Product : ref
+SaleOrder *-- SaleOrderItem : contains
+SaleOrderItem --> Product : ref
+SaleOrder --> User : createdBy
+PosPanel ..> SaleOrder : creates
+PosPanel ..> FileStorageService : use
+InventoryPanel ..> FileStorageService : use
+HistoryPanel ..> FileStorageService : use
+FileStorageService ..> CsvUtil : use
+FileStorageService ..> Product : persists
+FileStorageService ..> User : persists
+FileStorageService ..> SaleOrder : persists
+PosPanel ..> StyledButton : use
+InventoryPanel ..> StyledButton : use
+MainFrame ..> StyledButton : use
+PosPanel ..> AppFont : use
+@enduml
